@@ -115,8 +115,7 @@ func Example_headers() {
 	ts := httptest.NewServer(http.HandlerFunc(f))
 	defer ts.Close()
 
-	httpclient := &http.Client{Transport: &http.Transport{}}
-
+	httpclient := transport.NewIntraDataClient()
 	stream := transport.NewStream(httpclient, ts.URL, nil)
 
 	sendText(stream, text1, text2)
@@ -191,7 +190,7 @@ func Example_mux() {
 		fmt.Println(err)
 		return
 	}
-	httpclient := &http.Client{Transport: &http.Transport{}}
+	httpclient := transport.NewIntraDataClient()
 	url := ts.URL + path
 	stream := transport.NewStream(httpclient, url, nil)
 
@@ -249,7 +248,7 @@ func Test_CancelStream(t *testing.T) {
 	path, err := transport.Register(network, trname, recvFunc)
 	tassert.CheckFatal(t, err)
 
-	httpclient := &http.Client{Transport: &http.Transport{}}
+	httpclient := transport.NewIntraDataClient()
 	url := ts.URL + path
 	ctx, cancel := context.WithCancel(context.Background())
 	err = os.Setenv("AIS_STREAM_BURST_NUM", "1")
@@ -363,7 +362,7 @@ func Test_MultipleNetworks(t *testing.T) {
 		path, err := transport.Register(network, "endpoint", recvFunc)
 		tassert.CheckFatal(t, err)
 
-		httpclient := &http.Client{Transport: &http.Transport{}}
+		httpclient := transport.NewIntraDataClient()
 		url := ts.URL + path
 		streams = append(streams, transport.NewStream(httpclient, url, nil))
 	}
@@ -405,7 +404,7 @@ func Test_OnSendCallback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	httpclient := &http.Client{Transport: &http.Transport{}}
+	httpclient := transport.NewIntraDataClient()
 	url := ts.URL + path
 	stream := transport.NewStream(httpclient, url, nil)
 
@@ -484,7 +483,7 @@ func Test_ObjAttrs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	httpclient := &http.Client{Transport: &http.Transport{}}
+	httpclient := transport.NewIntraDataClient()
 	url := ts.URL + path
 	stream := transport.NewStream(httpclient, url, nil)
 
@@ -532,7 +531,7 @@ func streamWriteUntil(t *testing.T, ii int, wg *sync.WaitGroup, ts *httptest.Ser
 		}
 	}
 
-	httpclient := &http.Client{Transport: &http.Transport{}}
+	httpclient := transport.NewIntraDataClient()
 	url := ts.URL + path
 	var extra *transport.Extra
 	if compress {

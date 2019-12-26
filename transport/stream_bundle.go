@@ -8,7 +8,6 @@ package transport
 import (
 	"fmt"
 	"io"
-	"net/http"
 	"sync"
 	"unsafe"
 
@@ -16,6 +15,7 @@ import (
 	"github.com/NVIDIA/aistore/3rdparty/glog"
 	"github.com/NVIDIA/aistore/cluster"
 	"github.com/NVIDIA/aistore/cmn"
+	"github.com/valyala/fasthttp"
 )
 
 const (
@@ -33,7 +33,7 @@ type (
 		smap         *cluster.Smap // current Smap
 		smaplock     *sync.Mutex
 		lsnode       *cluster.Snode // local Snode
-		client       *http.Client
+		client       *fasthttp.Client
 		network      string
 		trname       string
 		streams      atomic.Pointer // points to bundle (below)
@@ -68,7 +68,7 @@ type (
 // API
 //
 
-func NewStreamBundle(sowner cluster.Sowner, lsnode *cluster.Snode, cl *http.Client, sbArgs SBArgs) (sb *StreamBundle) {
+func NewStreamBundle(sowner cluster.Sowner, lsnode *cluster.Snode, cl *fasthttp.Client, sbArgs SBArgs) (sb *StreamBundle) {
 	if !cmn.NetworkIsKnown(sbArgs.Network) {
 		glog.Errorf("Unknown network %s, expecting one of: %v", sbArgs.Network, cmn.KnownNetworks)
 	}

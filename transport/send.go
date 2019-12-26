@@ -28,6 +28,7 @@ import (
 	"github.com/NVIDIA/aistore/memsys"
 	"github.com/NVIDIA/aistore/xoshiro256"
 	"github.com/pierrec/lz4/v3"
+	"github.com/valyala/fasthttp"
 )
 
 // transport defaults
@@ -58,8 +59,9 @@ const (
 // API: types
 type (
 	Stream struct {
+		client *fasthttp.Client // http client this send-stream will use
+
 		// user-defined & queryable
-		client          *http.Client // http client this send-stream will use
 		toURL, trname   string       // http endpoint
 		sessID          int64        // stream session ID
 		sessST          atomic.Int64 // state of the TCP/HTTP session: active (connected) | inactive (disconnected)
@@ -191,13 +193,12 @@ var (
 
 // default HTTP client used with streams (intra-data network)
 // resulting transport will dial timeout=30s, timeout=no-timeout
-func NewIntraDataClient() *http.Client {
+func NewIntraDataClient() *fasthttp.Client {
 	config := cmn.GCO.Get()
-	return cmn.NewClient(cmn.TransportArgs{
-		SndRcvBufSize:   config.Net.L4.SndRcvBufSize,
-		WriteBufferSize: config.Net.HTTP.WriteBufferSize,
+	return &fasthttp.Client{
 		ReadBufferSize:  config.Net.HTTP.ReadBufferSize,
-	})
+		WriteBufferSize: config.Net.HTTP.WriteBufferSize,
+	}
 }
 
 func (extra *Extra) compressed() bool {
@@ -207,7 +208,7 @@ func (extra *Extra) compressed() bool {
 //
 // API: methods
 //
-func NewStream(client *http.Client, toURL string, extra *Extra) (s *Stream) {
+func NewStream(client *fasthttp.Client, toURL string, extra *Extra) (s *Stream) {
 	u, err := url.Parse(toURL)
 	if err != nil {
 		glog.Errorf("Failed to parse %s: %v", toURL, err)
@@ -326,7 +327,7 @@ func (s *Stream) compressed() bool { return s.lz4s.s == s }
 //
 // ---------------------------------------------------------------------------------------
 func (s *Stream) Send(hdr Header, reader io.ReadCloser, callback SendCallback, cmplPtr unsafe.Pointer, prc ...*atomic.Int64) (err error) {
-	s.time.inSend.Store(true) // indication for Collector to delay cleanup
+	s.time.inSend.Store(true) // an indication for Collector to postpone cleanup
 
 	if s.Terminated() {
 		err = fmt.Errorf("%s terminated(%s, %v), cannot send [%s/%s(%d)]",
@@ -526,11 +527,10 @@ func (s *Stream) isNextReq(ctx context.Context) (next bool) {
 	}
 }
 
-func (s *Stream) doRequest(ctx context.Context) (err error) {
+// NOTE: fasthttp does not support request cancelation
+func (s *Stream) doRequest(_ context.Context) (err error) {
 	var (
-		request  *http.Request
-		response *http.Response
-		body     io.Reader = s
+		body io.Reader = s
 	)
 	if s.compressed() {
 		s.lz4s.sgl.Reset()
@@ -545,21 +545,19 @@ func (s *Stream) doRequest(ctx context.Context) (err error) {
 		s.lz4s.zw.Header.BlockMaxSize = s.lz4s.blockMaxSize
 		body = &s.lz4s
 	}
-	if request, err = http.NewRequest(http.MethodPut, s.toURL, body); err != nil {
-		return
-	}
-	if ctx != background {
-		request = request.WithContext(ctx)
-	}
+	req, resp := fasthttp.AcquireRequest(), fasthttp.AcquireResponse()
+	req.Header.SetMethod(http.MethodPut)
+	req.SetRequestURI(s.toURL)
+	req.SetBodyStream(body, -1)
 	s.Numcur, s.Sizecur = 0, 0
 	if glog.FastV(4, glog.SmoduleTransport) {
 		glog.Infof("%s: Do", s)
 	}
 	if s.compressed() {
-		request.Header.Set(cmn.HeaderCompress, cmn.LZ4Compression)
+		req.Header.Set(cmn.HeaderCompress, cmn.LZ4Compression)
 	}
-	request.Header.Set(cmn.HeaderSessID, strconv.FormatInt(s.sessID, 10))
-	response, err = s.client.Do(request)
+	req.Header.Set(cmn.HeaderSessID, strconv.FormatInt(s.sessID, 10))
+	err = s.client.Do(req, resp)
 	if err == nil {
 		if glog.FastV(4, glog.SmoduleTransport) {
 			glog.Infof("%s: Done", s)
@@ -568,8 +566,13 @@ func (s *Stream) doRequest(ctx context.Context) (err error) {
 		glog.Errorf("%s: Error [%v]", s, err)
 		return
 	}
-	ioutil.ReadAll(response.Body)
-	response.Body.Close()
+	resp.BodyWriteTo(ioutil.Discard)
+	fasthttp.ReleaseRequest(req)
+	fasthttp.ReleaseResponse(resp)
+	if s.compressed() {
+		s.lz4s.sgl.Reset()
+		s.lz4s.zw.Reset(nil)
+	}
 	return
 }
 
@@ -794,9 +797,10 @@ func (lz4s *lz4Stream) Read(b []byte) (n int, err error) {
 	var (
 		sendoff = &lz4s.s.sendoff
 		last    = sendoff.obj.hdr.IsLast()
-		retry   = 64 // insist on returning n > 0
+		retry   = 64
 	)
 	if lz4s.sgl.Len() > 0 {
+		lz4s.zw.Flush()
 		n, err = lz4s.sgl.Read(b)
 		if err == io.EOF { // reusing/rewinding this buf multiple times
 			err = nil
@@ -807,28 +811,29 @@ re:
 	n, err = lz4s.s.Read(b)
 	_, _ = lz4s.zw.Write(b[:n])
 	if last {
-		lz4s.zw.Close()
+		lz4s.zw.Flush()
 		retry = 0
 	} else if lz4s.s.sendoff.obj.reader == nil /*eoObj*/ || err != nil {
 		lz4s.zw.Flush()
 		retry = 0
 	}
 	n, _ = lz4s.sgl.Read(b)
-	if n == 0 && retry > 0 {
-		runtime.Gosched()
-		retry--
-		goto re
+	if n == 0 {
+		if retry > 0 {
+			retry--
+			runtime.Gosched()
+			goto re
+		}
+		lz4s.zw.Flush()
+		n, _ = lz4s.sgl.Read(b)
 	}
 ex:
 	lz4s.s.stats.CompressedSize.Add(int64(n))
-
 	if lz4s.sgl.Len() == 0 {
 		lz4s.sgl.Reset()
-		if last && err == nil {
-			err = io.EOF
-		}
-	} else if last && err == io.EOF {
-		err = nil
+	}
+	if last && err == nil {
+		err = io.EOF
 	}
 	return
 }
