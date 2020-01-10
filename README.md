@@ -31,7 +31,7 @@ Also, AIStore:
 
 Last but not least, AIS runs natively on Kubernetes and features open format and, therefore, freedom to copy or move your data off of AIS at any time using familiar Linux `tar(1)`, `scp(1)`, `rsync(1)` and similar.
 
-For a detailed overview, design philosophy, and components, please see this [document](docs/overview.md), where you can also find 5 (five) alternative ways to populate AIStore with existing datasets.
+For AIStore white paper, detailed overview, and design philosophy, please see this [document](docs/overview.md), where you can also find 5 alternative ways to populate AIStore with existing datasets.
 
 ## Table of Contents
 - [Prerequisites](#prerequisites)
@@ -246,6 +246,7 @@ with the corresponding [JSON names](ais/setup/config.sh), respectively:
 - [Extended Actions](docs/xaction.md)
 - [Integrated Internet Downloader](downloader/README.md)
 - [Docker for AIS developers](docs/docker_main.md)
+- [Troubleshooting Cluster Operation](docs/troubleshooting.md)
 
 ## Selected Package READMEs
 - [Package `api`](api/README.md)
